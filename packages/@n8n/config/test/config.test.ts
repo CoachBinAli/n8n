@@ -1,6 +1,6 @@
+import { Container } from '@n8n/di';
 import fs from 'fs';
 import { mock } from 'jest-mock-extended';
-import { Container } from 'typedi';
 
 import { GlobalConfig } from '../src/index';
 
@@ -8,19 +8,18 @@ jest.mock('fs');
 const mockFs = mock<typeof fs>();
 fs.readFileSync = mockFs.readFileSync;
 
+const consoleWarnMock = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
 describe('GlobalConfig', () => {
 	beforeEach(() => {
 		Container.reset();
+		jest.clearAllMocks();
 	});
 
 	const originalEnv = process.env;
 	afterEach(() => {
 		process.env = originalEnv;
 	});
-
-	// deepCopy for diff to show plain objects
-	// eslint-disable-next-line n8n-local-rules/no-json-parse-json-stringify
-	const deepCopy = <T>(obj: T): T => JSON.parse(JSON.stringify(obj));
 
 	const defaultConfig: GlobalConfig = {
 		path: '/',
@@ -107,6 +106,9 @@ describe('GlobalConfig', () => {
 				maxFileSizeInKB: 10240,
 			},
 		},
+		externalHooks: {
+			files: [],
+		},
 		externalSecrets: {
 			preferGet: false,
 			updateInterval: 300,
@@ -116,6 +118,7 @@ describe('GlobalConfig', () => {
 				enabled: true,
 				registry: 'https://registry.npmjs.org',
 				reinstallMissing: false,
+				allowToolUsage: false,
 			},
 			errorTriggerType: 'n8n-nodes-base.errorTrigger',
 			include: [],
@@ -138,6 +141,7 @@ describe('GlobalConfig', () => {
 		externalStorage: {
 			s3: {
 				host: '',
+				protocol: 'https',
 				bucket: {
 					name: '',
 					region: '',
@@ -150,8 +154,8 @@ describe('GlobalConfig', () => {
 		},
 		workflows: {
 			defaultName: 'My workflow',
-			onboardingFlowDisabled: false,
 			callerPolicyDefaultOption: 'workflowsFromSameOwner',
+			activationBatchSize: 1,
 		},
 		endpoints: {
 			metrics: {
@@ -169,6 +173,7 @@ describe('GlobalConfig', () => {
 				includeApiStatusCodeLabel: false,
 				includeQueueMetrics: false,
 				queueMetricsInterval: 20,
+				activeWorkflowCountInterval: 60,
 			},
 			additionalNonUIRoutes: '',
 			disableProductionWebhooksOnMainProcess: false,
@@ -210,6 +215,7 @@ describe('GlobalConfig', () => {
 					username: '',
 					clusterNodes: '',
 					tls: false,
+					dualStack: false,
 				},
 				gracefulShutdownTimeout: 30,
 				prefix: 'bull',
@@ -223,21 +229,22 @@ describe('GlobalConfig', () => {
 		},
 		taskRunners: {
 			enabled: false,
-			mode: 'internal_childprocess',
+			mode: 'internal',
 			path: '/runners',
 			authToken: '',
 			listenAddress: '127.0.0.1',
 			maxPayload: 1024 * 1024 * 1024,
 			port: 5679,
-			launcherPath: '',
-			launcherRunner: 'javascript',
 			maxOldSpaceSize: '',
-			maxConcurrency: 5,
-			assertDeduplicationOutput: false,
+			maxConcurrency: 10,
+			taskTimeout: 300,
+			heartbeatInterval: 30,
 		},
 		sentry: {
 			backendDsn: '',
 			frontendDsn: '',
+			environment: '',
+			deploymentName: '',
 		},
 		logging: {
 			level: 'info',
@@ -272,20 +279,40 @@ describe('GlobalConfig', () => {
 			blockFileAccessToN8nFiles: true,
 			daysAbandonedWorkflow: 90,
 		},
-		pruning: {
-			isEnabled: true,
-			maxAge: 336,
-			maxCount: 10_000,
-			hardDeleteBuffer: 1,
-			hardDeleteInterval: 15,
-			softDeleteInterval: 60,
+		executions: {
+			pruneData: true,
+			pruneDataMaxAge: 336,
+			pruneDataMaxCount: 10_000,
+			pruneDataHardDeleteBuffer: 1,
+			pruneDataIntervals: {
+				hardDelete: 15,
+				softDelete: 60,
+			},
+		},
+		diagnostics: {
+			enabled: true,
+			frontendConfig: '1zPn9bgWPzlQc0p8Gj1uiK6DOTn;https://telemetry.n8n.io',
+			backendConfig: '1zPn7YoGC3ZXE9zLeTKLuQCB4F6;https://telemetry.n8n.io',
+			posthogConfig: {
+				apiKey: 'phc_4URIAm1uYfJO7j8kWSe0J8lc8IqnstRLS7Jx8NcakHo',
+				apiHost: 'https://ph.n8n.io',
+			},
+		},
+		aiAssistant: {
+			baseUrl: '',
+		},
+		tags: {
+			disabled: false,
+		},
+		partialExecutions: {
+			version: 2,
 		},
 	};
 
 	it('should use all default values when no env variables are defined', () => {
 		process.env = {};
 		const config = Container.get(GlobalConfig);
-		expect(deepCopy(config)).toEqual(defaultConfig);
+		expect(structuredClone(config)).toEqual(defaultConfig);
 		expect(mockFs.readFileSync).not.toHaveBeenCalled();
 	});
 
@@ -300,7 +327,7 @@ describe('GlobalConfig', () => {
 			N8N_TEMPLATES_ENABLED: '0',
 		};
 		const config = Container.get(GlobalConfig);
-		expect(deepCopy(config)).toEqual({
+		expect(structuredClone(config)).toEqual({
 			...defaultConfig,
 			database: {
 				logging: defaultConfig.database.logging,
@@ -341,7 +368,7 @@ describe('GlobalConfig', () => {
 		mockFs.readFileSync.calledWith(passwordFile, 'utf8').mockReturnValueOnce('password-from-file');
 
 		const config = Container.get(GlobalConfig);
-		expect(deepCopy(config)).toEqual({
+		expect(structuredClone(config)).toEqual({
 			...defaultConfig,
 			database: {
 				...defaultConfig.database,
@@ -352,5 +379,16 @@ describe('GlobalConfig', () => {
 			},
 		});
 		expect(mockFs.readFileSync).toHaveBeenCalled();
+	});
+
+	it('should handle invalid numbers', () => {
+		process.env = {
+			DB_LOGGING_MAX_EXECUTION_TIME: 'abcd',
+		};
+		const config = Container.get(GlobalConfig);
+		expect(config.database.logging.maxQueryExecutionTime).toEqual(0);
+		expect(consoleWarnMock).toHaveBeenCalledWith(
+			'Invalid number value for DB_LOGGING_MAX_EXECUTION_TIME: abcd',
+		);
 	});
 });

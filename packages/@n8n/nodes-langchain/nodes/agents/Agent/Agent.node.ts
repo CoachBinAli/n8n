@@ -9,6 +9,8 @@ import type {
 	INodeProperties,
 } from 'n8n-workflow';
 
+import { promptTypeOptions, textFromPreviousNode, textInput } from '@utils/descriptions';
+
 import { conversationalAgentProperties } from './agents/ConversationalAgent/description';
 import { conversationalAgentExecute } from './agents/ConversationalAgent/execute';
 import { openAiFunctionsAgentProperties } from './agents/OpenAiFunctionsAgent/description';
@@ -21,12 +23,17 @@ import { sqlAgentAgentProperties } from './agents/SqlAgent/description';
 import { sqlAgentAgentExecute } from './agents/SqlAgent/execute';
 import { toolsAgentProperties } from './agents/ToolsAgent/description';
 import { toolsAgentExecute } from './agents/ToolsAgent/execute';
-import { promptTypeOptions, textInput } from '../../../utils/descriptions';
 
 // Function used in the inputs expression to figure out which inputs to
 // display based on the agent type
 function getInputs(
-	agent: 'toolsAgent' | 'conversationalAgent' | 'openAiFunctionsAgent' | 'reActAgent' | 'sqlAgent',
+	agent:
+		| 'toolsAgent'
+		| 'conversationalAgent'
+		| 'openAiFunctionsAgent'
+		| 'planAndExecuteAgent'
+		| 'reActAgent'
+		| 'sqlAgent',
 	hasOutputParser?: boolean,
 ): Array<NodeConnectionType | INodeInputConfiguration> {
 	interface SpecialInput {
@@ -58,9 +65,11 @@ function getInputs(
 				type,
 				displayName,
 				required: isModelType,
-				maxConnections: [NodeConnectionType.AiLanguageModel, NodeConnectionType.AiMemory].includes(
-					type as NodeConnectionType,
-				)
+				maxConnections: [
+					NodeConnectionType.AiLanguageModel,
+					NodeConnectionType.AiMemory,
+					NodeConnectionType.AiOutputParser,
+				].includes(type as NodeConnectionType)
 					? 1
 					: undefined,
 			};
@@ -90,6 +99,8 @@ function getInputs(
 						'@n8n/n8n-nodes-langchain.lmChatGoogleVertex',
 						'@n8n/n8n-nodes-langchain.lmChatMistralCloud',
 						'@n8n/n8n-nodes-langchain.lmChatAzureOpenAi',
+						'@n8n/n8n-nodes-langchain.lmChatDeepSeek',
+						'@n8n/n8n-nodes-langchain.lmChatOpenRouter',
 					],
 				},
 			},
@@ -118,6 +129,8 @@ function getInputs(
 						'@n8n/n8n-nodes-langchain.lmChatGroq',
 						'@n8n/n8n-nodes-langchain.lmChatGoogleVertex',
 						'@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
+						'@n8n/n8n-nodes-langchain.lmChatDeepSeek',
+						'@n8n/n8n-nodes-langchain.lmChatOpenRouter',
 					],
 				},
 			},
@@ -251,7 +264,7 @@ export class Agent implements INodeType {
 		icon: 'fa:robot',
 		iconColor: 'black',
 		group: ['transform'],
-		version: [1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7],
+		version: [1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8],
 		description: 'Generates an action plan and executes it. Can use external tools.',
 		subtitle:
 			"={{ {	toolsAgent: 'Tools Agent', conversationalAgent: 'Conversational Agent', openAiFunctionsAgent: 'OpenAI Functions Agent', reActAgent: 'ReAct Agent', sqlAgent: 'SQL Agent', planAndExecuteAgent: 'Plan and Execute Agent' }[$parameter.agent] }}",
@@ -317,6 +330,24 @@ export class Agent implements INodeType {
 					},
 				},
 			},
+			{
+				displayName:
+					"This node is using Agent that has been deprecated. Please switch to using 'Tools Agent' instead.",
+				name: 'deprecated',
+				type: 'notice',
+				default: '',
+				displayOptions: {
+					show: {
+						agent: [
+							'conversationalAgent',
+							'openAiFunctionsAgent',
+							'planAndExecuteAgent',
+							'reActAgent',
+							'sqlAgent',
+						],
+					},
+				},
+			},
 			// Make Conversational Agent the default agent for versions 1.5 and below
 			{
 				...agentTypeProperty,
@@ -326,10 +357,17 @@ export class Agent implements INodeType {
 				displayOptions: { show: { '@version': [{ _cnd: { lte: 1.5 } }] } },
 				default: 'conversationalAgent',
 			},
-			// Make Tools Agent the default agent for versions 1.6 and above
+			// Make Tools Agent the default agent for versions 1.6 and 1.7
 			{
 				...agentTypeProperty,
-				displayOptions: { show: { '@version': [{ _cnd: { gte: 1.6 } }] } },
+				displayOptions: { show: { '@version': [{ _cnd: { between: { from: 1.6, to: 1.7 } } }] } },
+				default: 'toolsAgent',
+			},
+			// Make Tools Agent the only agent option for versions 1.8 and above
+			{
+				...agentTypeProperty,
+				type: 'hidden',
+				displayOptions: { show: { '@version': [{ _cnd: { gte: 1.8 } }] } },
 				default: 'toolsAgent',
 			},
 			{
@@ -337,6 +375,17 @@ export class Agent implements INodeType {
 				displayOptions: {
 					hide: {
 						'@version': [{ _cnd: { lte: 1.2 } }],
+						agent: ['sqlAgent'],
+					},
+				},
+			},
+			{
+				...textFromPreviousNode,
+				displayOptions: {
+					show: { promptType: ['auto'], '@version': [{ _cnd: { gte: 1.7 } }] },
+					// SQL Agent has data source and credentials parameters so we need to include this input there manually
+					// to preserve the order
+					hide: {
 						agent: ['sqlAgent'],
 					},
 				},
